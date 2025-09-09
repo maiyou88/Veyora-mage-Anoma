@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Synkris Anoma – HTML5 Canvas</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121933cc;
+      --accent: #ff7a00; /* shrimp */
+      --mint: #39d98a; /* success */
+      --text: #e8ebff;
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      background: radial-gradient(1200px 800px at 70% 30%, #12204a 0%, var(--bg) 60%, #070a14 100%);
+      color: var(--text);
+      display: grid; place-items: center;
+    }
+    .wrap { width: 100%; max-width: 1024px; padding: 12px; }
+    header {
+      display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px;
+      background: var(--panel); padding: 10px 14px; border-radius: 14px; backdrop-filter: blur(6px);
+      box-shadow: 0 6px 20px rgba(0,0,0,.25);
+    }
+    .title { font-weight: 800; letter-spacing: .3px; }
+    .hud { display:flex; align-items:center; gap:16px; font-weight:700; }
+    .badge { background:#1a244d; padding:6px 10px; border-radius:999px; font-size:14px; }
+    canvas { width:100%; height:auto; display:block; background:#0e1327; border-radius: 16px; box-shadow: 0 16px 40px rgba(0,0,0,.4); }
+    footer { margin-top:8px; font-size: 13px; opacity:.9; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    kbd{background:#202a56; padding:2px 6px; border-radius:6px; border:1px solid #2e3a78; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
+
+    /* On-screen controls (mobile) */
+    .controls { position: fixed; inset:auto 0 12px 0; display:flex; justify-content:center; gap:18px; pointer-events:none; }
+    .btn { pointer-events:auto; background: var(--panel); border:1px solid #22306b; width:72px; height:72px; border-radius: 16px; display:grid; place-items:center; font-weight:800; user-select:none; color: var(--text); }
+    .btn:active{ transform: translateY(1px); }
+    @media (min-width: 900px){ .controls{ display:none; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="title">🦐 <span>Synkris Anoma</span> · <small>Minimal HTML5</small></div>
+      <div class="hud">
+        <div class="badge">Score: <span id="score">0</span></div>
+        <div class="badge">Shrimp: <span id="shrimp-left">0</span></div>
+        <div class="badge" title="FPS (approx)">FPS: <span id="fps">0</span></div>
+      </div>
+    </header>
+
+    <canvas id="game" width="960" height="540" aria-label="Synkris Anoma Game"></canvas>
+    <footer>
+      <div>วิธีเล่น: ลูกศรซ้าย/ขวา หรือ <kbd>A</kbd>/<kbd>D</kbd> เดิน · <kbd>Tab</kbd>/<kbd>W</kbd>/<kbd>↑</kbd>/<kbd>Space</kbd> กระโดด · <kbd>P</kbd> หยุดเกม</div>
+    </footer>
+  </div>
+
+  <!-- Simple on-screen mobile controls -->
+  <div class="controls" id="touchControls">
+    <div class="btn" data-hold="left">←</div>
+    <div class="btn" data-hold="jump">⤴</div>
+    <div class="btn" data-hold="right">→</div>
+  </div>
+
+  <script>
+    // ===== Config =====
+    const CONFIG = {
+      gravity: 1800, // px/s^2
+      moveAccel: 2600,
+      maxSpeedX: 320,
+      jumpSpeed: 680,
+      frictionGround: 1800,
+      frictionAir: 200,
+      worldWidth: 1920,
+      worldHeight: 1080,
+    };
+
+    // ===== Helpers =====
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const rectsOverlap = (a,b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    const lerp = (a,b,t)=>a+(b-a)*t;
+
+    // ===== Input =====
+    const Keys = { left:false,right:false,up:false,pause:false };
+    const down = new Set();
+    addEventListener('keydown', e => {
+      if(['Tab',' '].includes(e.key)) e.preventDefault();
+      down.add(e.key);
+      if(['ArrowLeft','a','A'].includes(e.key)) Keys.left = true;
+      if(['ArrowRight','d','D'].includes(e.key)) Keys.right = true;
+      if(['ArrowUp','w','W',' ','Tab'].includes(e.key)) Keys.up = true;
+      if(['p','P'].includes(e.key)) Keys.pause = !Keys.pause;
+    });
+    addEventListener('keyup', e => {
+      down.delete(e.key);
+      if(['ArrowLeft','a','A'].includes(e.key)) Keys.left = false;
+      if(['ArrowRight','d','D'].includes(e.key)) Keys.right = false;
+      if(['ArrowUp','w','W',' ','Tab'].includes(e.key)) Keys.up = false;
+    });
+
+    // Touch buttons
+    const tc = document.getElementById('touchControls');
+    tc.addEventListener('touchstart', e => {
+      const t = e.target.closest('[data-hold]');
+      if(!t) return; e.preventDefault();
+      const k = t.dataset.hold; if(k==='left') Keys.left=true; if(k==='right') Keys.right=true; if(k==='jump') Keys.up=true;
+    }, {passive:false});
+    tc.addEventListener('touchend', e => {
+      const t = e.target.closest('[data-hold]');
+      if(!t) return; e.preventDefault();
+      const k = t.dataset.hold; if(k==='left') Keys.left=false; if(k==='right') Keys.right=false; if(k==='jump') Keys.up=false;
+    }, {passive:false});
+
+    // ===== World =====
+    const canvas = document.getElementById('game');
+    const cx = canvas.getContext('2d');
+
+    const camera = { x:0, y:0, w:canvas.width, h:canvas.height };
+
+    const player = {
+      x: 100, y: 0, w: 32, h: 44,
+      vx: 0, vy: 0,
+      onGround: false,
+      dir: 1,
+      color: '#ffdca8'
+    };
+
+    // Platforms (x,y,w,h)
+    const platforms = [
+      {x:0, y:460, w:600, h:24},
+      {x:680, y:420, w:240, h:20},
+      {x:980, y:360, w:220, h:20},
+      {x:1300, y:320, w:300, h:20},
+      {x:0, y:540-12, w:CONFIG.worldWidth, h:12}, // floor line
+    ];
+
+    // Shrimp collectibles
+    const shrimp = [];
+    function seedShrimp(){
+      shrimp.length = 0;
+      const spots = [
+        [140, 410],[220, 410],[300, 410],[540, 410],
+        [740, 360],[900, 360],
+        [1020, 300],[1180, 300],
+        [1340, 260],[1520, 260],[1700, 260]
+      ];
+      for(const [sx, sy] of spots){
+        shrimp.push({x:sx, y:sy, r:10, alive:true, t:Math.random()*6.28});
+      }
+      updateShrimpLeft();
+    }
+
+    // ===== Game State =====
+    let score = 0;
+    let last = performance.now();
+    let fpsAcc=0, fpsCnt=0, fps=0;
+    let win = false;
+    seedShrimp();
+
+    // ===== HUD =====
+    const elScore = document.getElementById('score');
+    const elShrimp = document.getElementById('shrimp-left');
+    const elFps = document.getElementById('fps');
+    function updateScore(){ elScore.textContent = score; }
+    function updateShrimpLeft(){ elShrimp.textContent = shrimp.filter(s=>s.alive).length; }
+
+    // ===== Physics + Collisions =====
+    function step(dt){
+      if(Keys.pause) return;
+      // Horizontal input
+      const accel = Keys.left === Keys.right ? 0 : (Keys.left ? -CONFIG.moveAccel : CONFIG.moveAccel);
+      player.vx += accel * dt;
+
+      // Friction
+      const fr = player.onGround ? CONFIG.frictionGround : CONFIG.frictionAir;
+      if(accel === 0){
+        if(Math.abs(player.vx) < fr * dt) player.vx = 0; else player.vx -= Math.sign(player.vx) * fr * dt;
+      }
+
+      player.vx = clamp(player.vx, -CONFIG.maxSpeedX, CONFIG.maxSpeedX);
+
+      // Gravity
+      player.vy += CONFIG.gravity * dt;
+
+      // Jump
+      if(Keys.up && player.onGround){
+        player.vy = -CONFIG.jumpSpeed;
+        player.onGround = false;
+      }
+
+      // Integrate
+      player.x += player.vx * dt;
+      collideX();
+      player.y += player.vy * dt;
+      collideY();
+
+      // Direction
+      if(player.vx !== 0) player.dir = Math.sign(player.vx);
+
+      // Camera follow
+      const targetCamX = clamp(player.x + player.w/2 - camera.w/2, 0, CONFIG.worldWidth - camera.w);
+      camera.x = lerp(camera.x, targetCamX, 0.15);
+
+      // Collect shrimp
+      for(const s of shrimp){
+        if(!s.alive) continue;
+        // bobbing
+        s.t += dt*2.2; const bob = Math.sin(s.t)*3;
+        const hit = rectsOverlap(
+          {x:player.x, y:player.y, w:player.w, h:player.h},
+          {x:s.x-10, y:s.y-10+bob, w:20, h:20}
+        );
+        if(hit){ s.alive = false; score += 10; updateScore(); updateShrimpLeft(); }
+      }
+
+      // Win condition
+      if(!win && shrimp.every(s=>!s.alive)){
+        win = true;
+        toast('🎉 You collected all shrimp! กด R เพื่อเริ่มใหม่');
+      }
+    }
+
+    function collideX(){
+      for(const p of platforms){
+        const box = {x:p.x, y:p.y, w:p.w, h:p.h};
+        if(rectsOverlap({x:player.x, y:player.y, w:player.w, h:player.h}, box)){
+          if(player.vx > 0){ player.x = p.x - player.w; player.vx = 0; }
+          else if(player.vx < 0){ player.x = p.x + p.w; player.vx = 0; }
+        }
+      }
+      player.x = clamp(player.x, 0, CONFIG.worldWidth - player.w);
+    }
+
+    function collideY(){
+      player.onGround = false;
+      for(const p of platforms){
+        const box = {x:p.x, y:p.y, w:p.w, h:p.h};
+        if(rectsOverlap({x:player.x, y:player.y, w:player.w, h:player.h}, box)){
+          if(player.vy > 0){ // falling onto platform
+            player.y = p.y - player.h; player.vy = 0; player.onGround = true;
+          } else if(player.vy < 0){ // head bump
+            player.y = p.y + p.h; player.vy = 0;
+          }
+        }
+      }
+      player.y = clamp(player.y, -9999, CONFIG.worldHeight - player.h);
+    }
+
+    // ===== Rendering =====
+    function draw(){
+      cx.save();
+      cx.clearRect(0,0,canvas.width,canvas.height);
+
+      // Parallax background
+      const grad = cx.createLinearGradient(0,0,0,canvas.height);
+      grad.addColorStop(0,'#0a1030'); grad.addColorStop(1,'#030614');
+      cx.fillStyle = grad; cx.fillRect(0,0,canvas.width,canvas.height);
+
+      // Stars
+      cx.fillStyle = 'rgba(255,255,255,.08)';
+      for(let i=0;i<140;i++) cx.fillRect((i*97)%canvas.width, (i*53)%canvas.height, 2, 2);
+
+      cx.translate(-camera.x, -camera.y);
+
+      // Platforms
+      for(const p of platforms){
+        cx.fillStyle = '#1d2552';
+        cx.fillRect(p.x, p.y, p.w, p.h);
+        cx.fillStyle = '#263071';
+        cx.fillRect(p.x, p.y, p.w, 4);
+      }
+
+      // Shrimp coins
+      for(const s of shrimp){
+        if(!s.alive) continue;
+        const bob = Math.sin(s.t)*3;
+        cx.beginPath();
+        cx.arc(s.x, s.y + bob, s.r+4, 0, Math.PI*2);
+        cx.fillStyle = '#3b2a00'; cx.fill();
+        cx.beginPath();
+        cx.arc(s.x, s.y + bob, s.r, 0, Math.PI*2);
+        cx.fillStyle = '#ffb14d'; cx.fill();
+        // tiny shrimp tail mark
+        cx.fillStyle = '#ff7a00';
+        cx.fillRect(s.x-2, s.y + bob - 2, 4, 4);
+      }
+
+      // Player (red wizard-ish silhouette)
+      cx.save();
+      cx.translate(player.x + player.w/2, player.y + player.h/2);
+      cx.scale(player.dir, 1);
+      // cloak
+      cx.fillStyle = '#d3202f';
+      cx.beginPath(); cx.moveTo(-14,20); cx.lineTo(-12,-12); cx.lineTo(8,-20); cx.lineTo(12,18); cx.closePath(); cx.fill();
+      // face
+      cx.fillStyle = player.color; cx.fillRect(0,-18,10,10);
+      // staff / lightning hammer silhouette
+      cx.fillStyle = '#8ce1ff'; cx.fillRect(8,-24,4,26);
+      cx.restore();
+
+      // Ground horizon decorative
+      cx.fillStyle = 'rgba(255,255,255,.06)';
+      cx.fillRect(0, 540-2, CONFIG.worldWidth, 2);
+
+      // Win banner
+      if(win){
+        cx.save();
+        cx.resetTransform();
+        cx.fillStyle = 'rgba(0,0,0,.45)';
+        cx.fillRect(0,0,canvas.width,canvas.height);
+        cx.fillStyle = '#fff';
+        cx.font = 'bold 32px system-ui';
+        cx.textAlign='center';
+        cx.fillText('🎉 You collected all shrimp! กด R เพื่อเริ่มใหม่', canvas.width/2, canvas.height/2);
+        cx.restore();
+      }
+
+      cx.restore();
+    }
+
+    // ===== Loop =====
+    function loop(now){
+      const dt = Math.min(1/30, (now - last)/1000); // clamp dt for stability
+      last = now;
+      fpsAcc += 1/dt; fpsCnt++;
+      if(fpsCnt >= 12){ fps = Math.round(fpsAcc/fpsCnt); fpsAcc=0; fpsCnt=0; elFps.textContent = fps; }
+
+      step(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    // Restart
+    addEventListener('keydown', e => {
+      if(e.key === 'r' || e.key === 'R') restart();
+    });
+    function restart(){
+      score = 0; updateScore();
+      player.x = 100; player.y = 0; player.vx=0; player.vy=0; player.onGround=false; win=false;
+      seedShrimp();
+    }
+
+    // Tiny toast helper
+    let toastTimer; function toast(msg){
+      clearTimeout(toastTimer);
+      const div = document.createElement('div');
+      div.textContent = msg;
+      div.style.cssText = 'position:fixed;left:50%;top:18px;transform:translateX(-50%);background:var(--panel);border:1px solid #2b3a82;padding:10px 14px;border-radius:12px;color:var(--text);z-index:99;box-shadow:0 10px 30px rgba(0,0,0,.35)';
+      document.body.appendChild(div);
+      toastTimer = setTimeout(()=>div.remove(), 2600);
+    }
+
+    // Boot
+    updateScore(); updateShrimpLeft();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
